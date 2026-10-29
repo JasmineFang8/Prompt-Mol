@@ -1,40 +1,22 @@
-import copy
-import csv
-import re
+import argparse
 import pickle
-from typing import List, Dict, Tuple
+from pathlib import Path
+from typing import List
 
-import joblib
 import numpy as np
 import pandas as pd
-import catboost as cb
-import argparse
-from collections import defaultdict
-from tqdm.auto import tqdm
-
 import torch
-from torch.utils.data import Dataset, DataLoader, SequentialSampler
-from torch.optim import AdamW, Adam
-from transformers import get_scheduler, GPT2Config
-from torch.utils.data import Dataset, DataLoader, SequentialSampler
-from torch import distributions
 import torch.nn.functional as F
+from torch.utils.data import Dataset
+from tqdm.auto import tqdm
+from transformers import GPT2Config
 
 from GPT_meta import PromptGPT
+from all_range import pp_range
 from bert_tokenizer import ExpressionBertTokenizer
-from maplight import get_fingerprints, scaler
-from prompts_nor_1 import PropertyTokenizer, MoleculeDescriptorCalculator, SimilarityFinder, ExtendedSimilarityFinder, \
-    ExtendedSimLabelFinder
-from transformers.models.gpt2 import GPT2LMHeadModel
+from prompts_nor import PropertyTokenizer, ExtendedSimilarityFinder
 
-from early_stop.pytorchtools import EarlyStopping
-from sklearn import metrics
-from scipy.stats import spearmanr
-
-from rdkit import Chem, DataStructs
-from maplight import get_rdkit_features, get_chosen_descriptors_model, get_chosen_descriptors,rdkit_2d_normalized_features_generator
-from rdkit.ML.Descriptors.MoleculeDescriptors import MolecularDescriptorCalculator
-from all_range import pp_diff_threshold, pp_diff, pp_des, pp_range
+PROJECT_ROOT = Path(__file__).resolve().parent
 
 class MyDataset(Dataset):
     def __init__(self, data_list):
@@ -50,18 +32,21 @@ class MyDataset(Dataset):
 
 def setup_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model_path', default='../RTM_torsion_countinue_v2_epoch7_400/', type=str, help='')
-    parser.add_argument('--vocab_path', default='./data/torsion_voc_gc.csv', type=str, help='')
-    parser.add_argument('--save_results', default="", type=str, help='')
+    parser.add_argument('--model_path', default='../RTM_torsion_countinue_v2_epoch7_400/', type=str,
+                        help='Path to trained .pt checkpoint (required for inference)')
+    parser.add_argument('--vocab_path', default=str(PROJECT_ROOT / 'prompt_reg_voc.csv'), type=str, help='')
+    parser.add_argument('--save_results', default="", type=str, required=True, help='Output CSV path')
     parser.add_argument('--train_raw_path', default='train_raw_data.txt', type=str, help='')
     parser.add_argument('--extra_raw_path', default='', type=str, help='')
+    parser.add_argument('--test_protein_path', default=str(PROJECT_ROOT / 'data/protein/test_protein_represent.pkl'),
+                        type=str, help='Protein representations in the same row order as the test CSV')
     parser.add_argument('--test_raw_path', default='test_raw_data.txt', type=str, help='')
 
     parser.add_argument('--warmup_steps', default=20000, type=int, required=False, help='warm up steps')
     parser.add_argument('--lr', default=5e-3, type=float, required=False, help='learn rate/meta-level outer learning rate')
     parser.add_argument('--max_grad_norm', default=1.0, type=float, required=False)
     parser.add_argument('--log_step', default=10, type=int, required=False, help='print log steps')
-    parser.add_argument('--extra_emb_dim', default=256, type=float, required=False, help='extra embedding model dim, for example protein')
+    parser.add_argument('--extra_emb_dim', default=256, type=int, required=False, help='extra embedding model dim, for example protein')
     parser.add_argument('--k', default=5, type=int, required=False, help='n_support')
     return parser.parse_args()
 
@@ -75,19 +60,20 @@ def organize_mixed_dataset(data_list: List[str], mode: str="no_3d"):
             if mode == "3d":
                 smiles = " ".join(parts[:-2])
             else:
-                smiles = " ".join(parts[:parts.index("GEO")]) 
-            property_name = parts[-2] 
-            property_value = float(parts[-1])  
+                smiles = " ".join(parts[:parts.index("GEO")])
+            property_name = parts[-2]
+            property_value = float(parts[-1])
             organized_smiles.append(smiles)
             organized_label.append((property_name, property_value))
-        except (IndexError, ValueError):
-            print(f"格式错误，跳过此条目: {entry}")
+        except (AttributeError, IndexError, ValueError) as exc:
+            raise ValueError(f'Malformed molecular record: {entry}') from exc
     return organized_smiles, organized_label
 
 
 def pairs_propmt(finder_similar):
-    result_similar = finder_similar.find_top_k_from_extra() 
+    result_similar = finder_similar.find_top_k_from_extra()
     s_q_list = []
+    no_sim_list = []
     for query, _, sim_list in result_similar:
         d_list = []
         if sim_list != []:
@@ -102,8 +88,7 @@ def pairs_propmt(finder_similar):
     return s_q_list, no_sim_list
 
 def data_tokenizer(data_i):
-    return tokenizer.encode(data_i, truncation=True, max_length=399, return_special_tokens_mask=True,
-                            add_special_tokens=False)
+    return tokenizer.encode(data_i, truncation=False, add_special_tokens=False)
 
 def merge_2d_lists(list1, list2):
     return [row1 + row2 for row1, row2 in zip(list1, list2)]
@@ -122,47 +107,20 @@ def data_to_list(train_mol, train_label, extra_smiles, extra_labels):
     no_sim_count["no descriptor"] = len(no_sim)
     updated_list = merge_2d_lists(tanimoto_property, descriptor_property)
 
-    print("!!!",len(updated_list))
-    print("nan support：", no_sim_count)
-    print(updated_list[7])
-    
+    print("Queries without anchors:", no_sim_count)
+
     return updated_list
-
-def collate_fn(mix_batch):
-    batch, des_batch = list(zip(*mix_batch))
-
-    # Convert des_batch to tensor and expand dimensions
-    des_batch_tensor = torch.tensor(des_batch, dtype=torch.float32)  # [batch_size, feature_dim]
-    des_batch = des_batch_tensor.unsqueeze(1)  # [batch_size, 1, feature_dim]
-    input_ids = []
-
-    input_lens_list = [len(w) for w in batch]
-    max_input_len = max(input_lens_list)
-
-    for btc_idx in range(len(batch)):
-        input_len = len(batch[btc_idx])
-        input_ids.append(batch[btc_idx])
-        input_ids[btc_idx].extend([tokenizer.pad_token_id] * (max_input_len - input_len))
-
-    # Padding des_batch directly using PyTorch
-    max_des_len = des_batch.size(1)
-    des_ids = torch.zeros((len(des_batch), max_des_len, des_batch.size(2)), dtype=torch.float32)
-    des_ids[:, :max_des_len, :] = des_batch
-
-    return torch.tensor(input_ids, dtype=torch.long), des_ids
 
 @torch.no_grad()
 def predict(model, tokenizer, batch_size, single_pocket,
             text="<|beginoftext|> <|mask:0|> <|mask:0|>"):
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-    # model, _ = load_model(args.save_model_path, args.vocab_path)
     protein_batch = single_pocket
     model.to(device)
     model.eval()
     max_length = 195
     input_ids = []
-    input_ids.extend(tokenizer.encode(text, truncation=True, max_length=399, return_special_tokens_mask=True,
-                            add_special_tokens=False))
+    input_ids.extend(tokenizer.encode(text, truncation=False, add_special_tokens=False))
     input_length = len(input_ids)
 
     input_tensor = torch.zeros(batch_size, input_length).long()
@@ -170,7 +128,6 @@ def predict(model, tokenizer, batch_size, single_pocket,
 
     Seq_list = []
 
-    # finished = torch.zeros(batch_size, 1).byte().to(device)
     finished = torch.zeros(batch_size, 1, dtype=torch.bool, device=device)
     eos_token_id = tokenizer.encode('<|endofmask|>', add_special_tokens=False)[0]
 
@@ -179,6 +136,8 @@ def predict(model, tokenizer, batch_size, single_pocket,
     protein_batch = protein_batch.repeat(batch_size, 1, 1)
     for i in range(max_length):
         inputs = input_tensor.to(device)
+        if inputs.size(1) + protein_batch.size(1) > 400:
+            raise ValueError('Prompt and protein features exceed the 400-position model limit.')
         outputs = model(inputs, protein_batch)
         logits = outputs.logits
         logits = F.softmax(logits[:, -1, :], dim=1)
@@ -187,7 +146,6 @@ def predict(model, tokenizer, batch_size, single_pocket,
         EOS_sampled = (last_token_id.squeeze(-1) == eos_token_id).unsqueeze(-1)
         finished = finished | EOS_sampled  # element-wise OR
         if finished.all():
-            print("End")
             break
 
         last_token = tokenizer.convert_ids_to_tokens(last_token_id)
@@ -226,24 +184,27 @@ if __name__ == '__main__':
     tokenizer = ExpressionBertTokenizer.from_pretrained(args.vocab_path)
     property_tokenizer = PropertyTokenizer()
     tokenizer.sep_token_id = tokenizer.vocab['<|endofmask|>']
-    # args.batch_size = 8
 
-    protein_matrix = read_data('../data/protein/test_protein_represent.pkl')
+    protein_matrix = read_data(args.test_protein_path)
 
     if args.extra_raw_path!='':
-        data1 = pd.read_csv(args.train_raw_path)
-        data2 = pd.read_csv(args.extra_raw_path)
+        data1 = pd.read_csv(args.train_raw_path, usecols=[column])
+        data2 = pd.read_csv(args.extra_raw_path, usecols=[column])
         train_data = pd.concat([data1,data2], ignore_index=True, join="inner").values.flatten().tolist()
     else:
         train_data = pd.read_csv(args.train_raw_path, usecols=[column]).values.flatten().tolist()
 
     test_data = pd.read_csv(args.test_raw_path, usecols=[column]).values.flatten().tolist()
-    train_smiles, train_label = organize_mixed_dataset(train_data) #[smiles,], [(str,label),]
+    train_smiles, train_label = organize_mixed_dataset(train_data)
 
     test_smiles, test_label = organize_mixed_dataset(test_data)
- 
+    if len(test_smiles) != len(protein_matrix):
+        raise ValueError('Test molecule and protein-representation counts must match in row order.')
+    if not train_smiles or not test_smiles:
+        raise ValueError('Anchor library and test data must contain molecular records.')
+
     test_data_list = data_to_list(test_smiles, test_label,train_smiles, train_label)
-    
+
     Ada_config = GPT2Config(
         architectures=["GPT2LMHeadModel"],
         model_type="GPT2LMHeadModel",
@@ -261,12 +222,10 @@ if __name__ == '__main__':
             }
         }
     )
-    model = PromptGPT(pretrain_path='../RTM_torsion_countinue_v2_epoch7_400/', config=Ada_config, emb_dim=args.extra_emb_dim)
-    param_dict = {key.replace("module.", ""): value for key, value in torch.load(args.model_path, map_location='cuda').items()}
+    model = PromptGPT(pretrain_path=str(PROJECT_ROOT / 'RTM_torsion_countinue_v2_epoch7_400'), config=Ada_config, emb_dim=args.extra_emb_dim)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    param_dict = {key.replace("module.", ""): value for key, value in torch.load(args.model_path, map_location=device).items()}
     model.load_state_dict(param_dict)
-    pred_list = []
-    var_list = []
-    output_file = args.save_results
 
     all_output = []
     # Total number = range * batch size
@@ -278,13 +237,13 @@ if __name__ == '__main__':
                 Seq_list = predict(model, tokenizer, single_pocket=pocket, batch_size=25, text=i)
                 Seq_all.extend(Seq_list)
             for j in Seq_all:
-                print(j)
                 one_output.append(decode(j))
-            all_output.append(one_output)
+        all_output.append(one_output)
 
-    print(f'Genetion finished! Raw seqs saves at {args.save_results}')
+    print(f'Generation finished. Raw sequences saved to {args.save_results}')
     output = pd.DataFrame(all_output)
 
+    Path(args.save_results).parent.mkdir(parents=True, exist_ok=True)
     output.to_csv(args.save_results, index=False, header=False, mode='a')
 
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)

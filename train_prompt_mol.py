@@ -17,13 +17,13 @@ def setup_args(argv=None):
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--task', choices=['property', 'protein_generation'], default='property')
     parser.add_argument('--code_dir', default=str(Path(__file__).resolve().parent),
-                        help='模块所在目录；默认本文件所在目录')
-    parser.add_argument('--model_path', default=None, help='预训练 GPT 目录；默认 ../RTM_torsion_countinue_v2_epoch7_400')
-    parser.add_argument('--vocab_path', default=None, help='默认 prompt_reg_voc.csv')
+                        help='Module directory; defaults to the directory containing this script')
+    parser.add_argument('--model_path', default=None, help='Pretrained GPT directory; defaults to RTM_torsion_countinue_v2_epoch7_400 under code_dir')
+    parser.add_argument('--vocab_path', default=None, help='Defaults to prompt_reg_voc.csv under code_dir')
     parser.add_argument('--save_model_path', default='save_model_unified')
     parser.add_argument('--train_raw_path', required=True)
     parser.add_argument('--valid_raw_path', required=True)
-    parser.add_argument('--extra_raw_path', default=None, help='蛋白任务的独立 support 分子库 CSV')
+    parser.add_argument('--extra_raw_path', default=None, help='External anchor library CSV for protein generation')
     parser.add_argument('--train_protein_path', default=None)
     parser.add_argument('--valid_protein_path', default=None)
     parser.add_argument('--column', default='smiles_label_torsion_all')
@@ -35,16 +35,16 @@ def setup_args(argv=None):
     parser.add_argument('--log_step', default=10, type=int)
     parser.add_argument('--k', default=5, type=int)
     parser.add_argument('--threshold', default=0.0, type=float,
-                        help='保留原词表 750..756 属性名 token 的附加监督权重')
+                        help='Additional supervision weight for property-name tokens 750..756')
     parser.add_argument('--early_patience', default=30, type=int)
-    parser.add_argument('--extra_emb_dim', default=None, type=int, help='默认自动推断；仅调整维度，不选择特征类型')
-    parser.add_argument('--mix_feature', default='rdkit', choices=['rdkit', 'des'], help='仅 property 使用')
-    parser.add_argument('--lambda_attn', default=0.0, type=float, help='仅 property 使用')
+    parser.add_argument('--extra_emb_dim', default=None, type=int, help='Inferred from prepared inputs by default; does not select the feature type')
+    parser.add_argument('--mix_feature', default='rdkit', choices=['rdkit', 'des'], help='Used only for the property task')
+    parser.add_argument('--lambda_attn', default=0.0, type=float, help='Used only for the property task')
     parser.add_argument('--lambda_alig', default=None, type=float,
-                        help='property 默认 0.2；protein_generation 默认 0，且必须为 0')
-    parser.add_argument('--max_length', default=399, type=int, help='文本长度上限；同时检查文本+额外特征不超过 400')
+                        help='Defaults to 0.2 for property; must be 0 for protein_generation')
+    parser.add_argument('--max_length', default=399, type=int, help='Maximum text length; text plus extra feature tokens must also fit within 400')
     parser.add_argument('--overlength', choices=['error', 'skip'], default='error',
-                        help='过长样本报错或整条跳过；不会截断目标')
+                        help='Raise an error or skip an overlength prompt without truncating the target')
     parser.add_argument('--seed', default=42, type=int)
     parser.add_argument('--device', choices=['auto', 'cpu', 'cuda'], default='auto')
     parser.add_argument('--prepare_only', action='store_true')
@@ -54,23 +54,23 @@ def setup_args(argv=None):
     if opts.task == 'protein_generation':
         for name in ('extra_raw_path', 'train_protein_path', 'valid_protein_path'):
             if not getattr(opts, name):
-                parser.error('--task protein_generation 必须指定 --' + name)
+                parser.error('--task protein_generation requires --' + name)
         if opts.lambda_attn != 0 or opts.lambda_alig != 0:
-            parser.error('蛋白模式不使用属性预测专用的 attention/alignment loss，请将两项权重设为 0')
+            parser.error('Protein generation requires both attention and alignment loss weights to be 0')
     for name in ('batch_size', 'epochs', 'log_step', 'k', 'early_patience', 'max_length'):
         if getattr(opts, name) <= 0:
-            parser.error('--' + name + ' 必须大于 0')
+            parser.error('--' + name + ' must be greater than 0')
     if opts.max_length > 399:
-        parser.error('模型位置上限为 400，--max_length 必须 <= 399')
+        parser.error('The model context is 400; --max_length must be <= 399')
     if opts.extra_emb_dim is not None and opts.extra_emb_dim <= 0:
-        parser.error('--extra_emb_dim 必须大于 0')
+        parser.error('--extra_emb_dim must be greater than 0')
     if opts.lr <= 0 or opts.max_grad_norm <= 0 or opts.warmup_steps < 0:
-        parser.error('lr/max_grad_norm 必须为正，warmup_steps 不能为负')
+        parser.error('lr and max_grad_norm must be positive; warmup_steps must be nonnegative')
     if min(opts.threshold, opts.lambda_attn, opts.lambda_alig) < 0:
-        parser.error('损失权重不能为负')
+        parser.error('Loss weights must be nonnegative')
     root = Path(opts.code_dir).expanduser().resolve()
     opts.code_dir = str(root)
-    opts.model_path = opts.model_path or str(root.parent / 'RTM_torsion_countinue_v2_epoch7_400')
+    opts.model_path = opts.model_path or str(root / 'RTM_torsion_countinue_v2_epoch7_400')
     opts.vocab_path = opts.vocab_path or str(root / 'prompt_reg_voc.csv')
     return opts
 
@@ -110,7 +110,7 @@ class MyDataset:
 
 def _property_label(value, property_name):
     if property_name not in pp_range:
-        raise ValueError(f'属性 {property_name!r} 未在 all_range.pp_range 中定义')
+        raise ValueError(f'Property {property_name!r} is not defined in all_range.pp_range')
     low, high = pp_range[property_name]
     label = property_tokenizer.normalize_to_input(value, low, high, 0, 1)
     return label
@@ -126,11 +126,14 @@ def organize_mixed_dataset(data_list, mode='no_3d'):
             property_name, value = parts[-2], float(parts[-1])
 
             _property_label(value, property_name)
-        except (IndexError, ValueError):
-            print(f"格式错误，跳过此条目: {entry}")
+        except (AttributeError, IndexError, ValueError) as exc:
+            if args.task == 'protein_generation':
+                raise ValueError(f'Invalid molecular row {index + 1}; protein rows must stay aligned') from exc
+            print(f"Skipping invalid molecular row {index + 1}: {entry}")
+            continue
         if args.task == 'property':
             if property_name not in pp_diff or property_name not in pp_diff_threshold:
-                raise ValueError(f'{property_name} 缺少原配对阈值配置')
+                raise ValueError(f'Missing pairing thresholds for {property_name}')
             organized_data[property_name][0].append(smiles)
             organized_data[property_name][1].append(value)
         else:
@@ -177,16 +180,21 @@ def pairs_propmt_protein(finder_similar, query_labels):
     return s_q_list, no_sim_list
 
 
-def data_tokenizer(data_i):
-    return tokenizer.encode(data_i, truncation=True, max_length=399, return_special_tokens_mask=True,
-                            add_special_tokens=False)
+def data_tokenizer(data_i, extra_length=1):
+    ids = tokenizer.encode(data_i, truncation=False, add_special_tokens=False)
+    if len(ids) > args.max_length or len(ids) + extra_length > 400:
+        if args.overlength == 'skip':
+            return None
+        raise ValueError(f'Prompt exceeds the length limit: {len(ids)} text tokens, '
+                         f'{extra_length} extra feature tokens')
+    return ids
 
 
 def data_to_list(data, train_label=None, extra_smiles=None, extra_labels=None, matrix_protein=None):
 
     if args.task == 'protein_generation':
         if len(data) != len(matrix_protein) or len(data) != len(train_label):
-            raise ValueError('CSV 分子条数、标签条数和蛋白矩阵条数必须完全一致，并按行对应')
+            raise ValueError('Molecules, labels and protein matrices must have matching counts and row order')
         finder = ExtendedSimilarityFinder(data, [value for _, value in train_label],
                                            extra_smiles, extra_labels, top_k=args.k,
                                            similarity_method='tanimoto')
@@ -195,14 +203,14 @@ def data_to_list(data, train_label=None, extra_smiles=None, extra_labels=None, m
         for index, prompt_list in enumerate(prompts):
             protein = np.asarray(matrix_protein[index], dtype=np.float32)
             if protein.ndim != 2 or min(protein.shape) <= 0 or not np.isfinite(protein).all():
-                raise ValueError(f'第 {index + 1} 条蛋白矩阵必须是非空、有限的 [L, D] 数组')
+                raise ValueError(f'Protein matrix {index + 1} must be a nonempty, finite [L, D] array')
             for text in prompt_list:
-                ids = data_tokenizer(text)
+                ids = data_tokenizer(text, extra_length=len(protein))
                 if ids is None:
                     skipped += 1
                 else:
                     data_list.append([ids, protein])
-        print(f'protein 提示数 {len(data_list)}，无 support 的 query {len(no_sim)}，过长跳过 {skipped}')
+        print(f'Protein prompts: {len(data_list)}; queries without anchors: {len(no_sim)}; skipped overlength prompts: {skipped}')
         return data_list
 
     data_list, no_sim_count = [], {}
@@ -220,10 +228,9 @@ def data_to_list(data, train_label=None, extra_smiles=None, extra_labels=None, m
     for text in data_list:
         ids = data_tokenizer(text)
         if ids is not None:
-            print(text)
             tokenized.append(ids)
             texts.append(text)
-    print(f'property 提示数 {len(texts)}，过长跳过 {len(data_list) - len(texts)}；无 support：{no_sim_count}')
+    print(f'Property prompts: {len(texts)}; skipped overlength prompts: {len(data_list) - len(texts)}; queries without anchors: {no_sim_count}')
     return tokenized, texts
 
 
@@ -234,14 +241,14 @@ def mix_extra_embedding(init_data_list, t_data_list):
         matchq = re.search(r'\[SEP\]\s(.*?)\s<', text)
         matchs = re.search(r'<\|beginoftext\|>\s(.*?)\s<', text)
         if not matchq or not matchs:
-            raise ValueError('无法从 property 提示解析 query/support 分子')
+            raise ValueError('Cannot parse query and anchor molecules from the property prompt')
         features = []
         for match in (matchq, matchs):
             smiles = ''.join(match.group(1).split())
             if smiles not in cache:
                 mol = Chem.MolFromSmiles(smiles)
                 if mol is None:
-                    raise ValueError(f'无效 SMILES：{smiles}')
+                    raise ValueError(f'Invalid SMILES: {smiles}')
                 values = (rdkit_2d_normalized_features_generator(mol) if args.mix_feature == 'rdkit'
                           else calculator.CalcDescriptors(mol))
                 cache[smiles] = np.asarray(values, dtype=np.float32)
@@ -261,7 +268,7 @@ def collate_fn(mix_batch):
     matrices = [np.asarray(x, dtype=np.float32) for x in extra_batch]
     matrices = [x[None, :] if x.ndim == 1 else x for x in matrices]
     if any(x.ndim != 2 or x.shape[1] != args.extra_emb_dim for x in matrices):
-        raise ValueError('batch 中额外特征维度与 extra_emb_dim 不匹配')
+        raise ValueError('Batch feature dimension does not match extra_emb_dim')
     lengths = [len(x) for x in matrices]
     extra_ids = np.zeros((len(batch), max(lengths), args.extra_emb_dim), dtype=np.float32)
     for index, matrix in enumerate(matrices):
@@ -297,7 +304,7 @@ def get_all_normal_dis_pdf(voc_len=None, confs_num=None):
     numeric_ids = sorted((idx for tok, idx in tokenizer.vocab.items() if re.fullmatch(r'p_\d+\.\d+', tok)),
                          key=lambda idx: float(tokenizer.convert_ids_to_tokens(idx)[2:]))
     if not numeric_ids:
-        raise ValueError('词表缺少 p_ 数值 token')
+        raise ValueError('Vocabulary has no p_ numeric tokens')
     for index, token_id in enumerate(numeric_ids):
         weights = torch.exp(-0.5 * ((torch.arange(len(numeric_ids)).float() - index) / 2.0) ** 2)
         weights[index] *= 2
@@ -318,7 +325,7 @@ def _loss_masks(labels, generate_molecule=False):
             masks = ids.eq(tokenizer.vocab['<|mask:0|>']).nonzero(as_tuple=True)[0]
             ends = ids.eq(tokenizer.vocab['<|endofmask|>']).nonzero(as_tuple=True)[0]
             if len(masks) != 2 or len(ends) != 1 or masks[1] + 1 >= ends[0]:
-                raise ValueError('蛋白生成提示必须包含两个 mask 和完整的目标分子/属性/结束标记')
+                raise ValueError('Protein generation prompts require two masks and a complete target molecule, property and end marker')
 
             main_mask[row, int(masks[1]):int(ends[0])] = True
     extra_mask = (shift_labels >= 750) & (shift_labels <= 756)
@@ -333,7 +340,7 @@ def _calculate_loss(outputs, labels, pdf_array, generate_molecule):
     active = main_mask | (extra_mask & (args.threshold > 0))
     count = active.sum()
     if count.item() == 0:
-        raise ValueError('当前 batch 没有可监督的目标 token')
+        raise ValueError('Batch has no supervised target tokens')
     log_probs = F.log_softmax(shift_logits, dim=-1)
     main_loss = -(pdf_array[shift_labels[main_mask]] * log_probs[main_mask]).sum()
     extra_loss = shift_logits.new_zeros(())
@@ -356,7 +363,7 @@ def _property_positions(input_ids):
     sep = input_ids.eq(tokenizer.vocab['[SEP]'])
     end = input_ids.eq(tokenizer.vocab['<|endofmask|>'])
     if not (sep.sum(dim=1).eq(1).all() and end.sum(dim=1).eq(1).all()):
-        raise ValueError('属性提示缺少唯一的 SEP 或结束标记')
+        raise ValueError('Property prompts require exactly one SEP and one end marker')
     return sep.long().argmax(dim=1) - 1, end.long().argmax(dim=1) - 1
 
 
@@ -381,11 +388,11 @@ def prediction_distribution_alignment_loss(outputs, embed_batch, input_ids, T=1.
     logits_s = outputs.logits[rows, support_pos - 1]
     logits_q = outputs.logits[rows, query_pos - 1]
     kl = F.kl_div(F.log_softmax(logits_q / T, dim=-1), F.softmax(logits_s / T, dim=-1),
-                  reduction='none').sum(dim=-1)  # 实际方向为 KL(s || q)，与原实现一致。
+                  reduction='none').sum(dim=-1)  # KL(s || q), preserving the original direction.
     if embed_batch.size(1) != 1 or embed_batch.size(-1) % 2:
-        raise ValueError('属性对齐需要 query/support 两个等维描述符拼成一个额外 token')
+        raise ValueError('Property alignment requires equal-size query and anchor descriptors concatenated into one extra token')
     emb_q, emb_s = embed_batch[:, 0].chunk(2, dim=-1)
-    sim_weight = (F.cosine_similarity(emb_q, emb_s, dim=-1) + 1) / 2  # [B]，不跨 batch 广播
+    sim_weight = (F.cosine_similarity(emb_q, emb_s, dim=-1) + 1) / 2  # [B], without broadcasting across the batch
     if mode == 'inverse_weight':
         sim_weight = 1 - sim_weight
     elif mode == 'hard_margin':
@@ -402,11 +409,11 @@ class EarlyStopping:
 
     def __call__(self, val_loss, model, model_name):
         if not math.isfinite(val_loss):
-            raise FloatingPointError('验证损失不是有限值，不保存该模型')
+            raise FloatingPointError('Validation loss is nonfinite; checkpoint will not be saved')
         if val_loss < self.best_score:
             self.best_score, self.counter = val_loss, 0
             torch.save(model.state_dict(), str(Path(model_name) / 'pytorch_model.pt'))
-            print(f'保存最佳模型，val_loss={val_loss:.6f}')
+            print(f'Saved best model; val_loss={val_loss:.6f}')
         else:
             self.counter += 1
             self.early_stop = self.counter >= self.patience
@@ -416,7 +423,7 @@ class EarlyStopping:
 def _check_model_runtime():
     from transformers.models.gpt2.modeling_gpt2 import GPT2Attention
     if not all(hasattr(GPT2Attention, key) for key in ('_split_heads', '_merge_heads', '_attn')):
-        raise RuntimeError('GPT_meta 使用旧 GPT2Attention 接口；请在兼容环境运行（原配置 transformers==4.24.0）')
+        raise RuntimeError('GPT_meta requires the legacy GPT2Attention interface; use transformers==4.24.0')
 
 
 def train(train_dataset, eval_dataset, args):
@@ -457,7 +464,7 @@ def train(train_dataset, eval_dataset, args):
                 if args.lambda_alig > 0:
                     loss = loss + args.lambda_alig * prediction_distribution_alignment_loss(outputs, extra_batch, batch)
             if not torch.isfinite(loss).item():
-                raise FloatingPointError('训练损失出现 NaN/Inf，请检查输入特征及学习率')
+                raise FloatingPointError('Training loss is NaN/Inf; check input features and learning rate')
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
             optimizer.step()
@@ -473,7 +480,7 @@ def train(train_dataset, eval_dataset, args):
         if early_stopping.early_stop:
             print('Early stopping')
             break
-    print(f'最佳验证损失 {early_stopping.best_score:.6f}；模型：{args.save_model_path}/pytorch_model.pt')
+    print(f'Best validation loss: {early_stopping.best_score:.6f}; checkpoint: {args.save_model_path}/pytorch_model.pt')
 
 
 def evaluate(model, dataloader):
@@ -496,7 +503,7 @@ def evaluate(model, dataloader):
             target_count += count
     model.train(was_training)
     if target_count == 0:
-        raise ValueError('验证集没有可监督目标')
+        raise ValueError('Validation set has no supervised targets')
     epoch_loss, epoch_accuracy = loss_sum / target_count, correct_sum / target_count
     print(f'val_loss: {epoch_loss:.6f}, val_accuracy: {epoch_accuracy:.6f}')
     return epoch_loss, epoch_accuracy, outputs
@@ -511,9 +518,9 @@ def read_data(path):
             except EOFError:
                 break
             if not isinstance(chunk, (list, tuple, np.ndarray)):
-                raise ValueError(f'{path} 必须存储蛋白矩阵列表，不能是字典或其他对象')
+                raise ValueError(f'{path} must contain lists of protein matrices')
             if isinstance(chunk, np.ndarray) and chunk.ndim == 2:
-                raise ValueError(f'{path} 中单个矩阵应包装成列表 [matrix] 后保存')
+                raise ValueError(f'Wrap each individual matrix in a list [matrix] before saving it to {path}')
             data.extend(chunk)
     return data
 
@@ -521,7 +528,7 @@ def read_data(path):
 def _read_csv(path):
     data = pd.read_csv(path, usecols=[args.column])[args.column].tolist()
     if not data:
-        raise ValueError(f'数据文件为空：{path}')
+        raise ValueError(f'Empty data file: {path}')
     return data
 
 
@@ -539,7 +546,7 @@ def main(argv=None):
     requested = 'cuda' if args.device == 'auto' and torch.cuda.is_available() else args.device
     device = torch.device('cpu' if requested == 'auto' else requested)
     if device.type == 'cuda' and not torch.cuda.is_available():
-        raise ValueError('指定了 cuda，但当前环境没有可用 CUDA 设备')
+        raise ValueError('CUDA was requested but no CUDA device is available')
     tokenizer = ExpressionBertTokenizer.from_pretrained(args.vocab_path)
     property_tokenizer = PropertyTokenizer()
 
@@ -561,11 +568,21 @@ def main(argv=None):
         del eval_protein
 
 
+    if not train_list or not eval_list:
+        raise ValueError('Training and validation sets must contain at least one prepared prompt')
+    for split in (train_list, eval_list):
+        for _, features in split:
+            feature_dim = features.shape[-1]
+            if args.extra_emb_dim is None:
+                args.extra_emb_dim = feature_dim
+            if feature_dim != args.extra_emb_dim:
+                raise ValueError(f'Feature dimension {feature_dim} does not match '
+                                 f'--extra_emb_dim {args.extra_emb_dim}')
     train_dataset, eval_dataset = MyDataset(train_list), MyDataset(eval_list)
     print(f'task={args.task}, train={len(train_dataset)}, valid={len(eval_dataset)}, '
           f'extra_emb_dim={args.extra_emb_dim}, device={device}')
     if args.prepare_only:
-        print('数据准备和维度校验完成；未启动训练、未写模型文件。')
+        print('Data preparation and dimension checks completed; no training or checkpoint writing was performed.')
         return train_dataset, eval_dataset
     train(train_dataset, eval_dataset, args)
 

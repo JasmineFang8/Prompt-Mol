@@ -11,7 +11,7 @@ from rdkit.Chem.rdMolDescriptors import GetHashedMorganFingerprint
 from rdkit.Avalon.pyAvalonTools import GetAvalonCountFP
 from rdkit.Chem import rdReducedGraphs
 from rdkit.ML.Descriptors.MoleculeDescriptors import MolecularDescriptorCalculator
-from descriptastorus.descriptors import rdDescriptors, rdNormalizedDescriptors
+from descriptastorus.descriptors import rdNormalizedDescriptors
 
 class scaler:
     def __init__(self, log=False):
@@ -52,12 +52,10 @@ class scaler:
         return y
 
     def save(self, path):
-        # 使用 joblib 保存对象
         joblib.dump(self, path)
 
     @staticmethod
     def load(path):
-        # 使用 joblib 加载对象
         scaler = joblib.load(path)
         print(f"Scaler loaded from {path}")
         return scaler
@@ -140,16 +138,6 @@ def get_chosen_descriptors():
 
 
 def get_chosen_descriptors_model():
-    # chosen_descriptors = ['BalabanJ', 'BertzCT', 'ExactMolWt', 'HallKierAlpha', 'HeavyAtomCount',
-    #                       'HeavyAtomMolWt', 'Ipc', 'Kappa1', 'Kappa2', 'Kappa3', 'LabuteASA',
-    #                       'MaxAbsEStateIndex', 'MaxAbsPartialCharge', 'MaxEStateIndex', 'MaxPartialCharge',
-    #                       'MinAbsEStateIndex', 'MinAbsPartialCharge', 'MinEStateIndex', 'MinPartialCharge',
-    #                       'MolLogP', 'MolMR', 'MolWt', 'NHOHCount', 'NOCount', 'NumAliphaticCarbocycles',
-    #                       'NumAliphaticHeterocycles', 'NumAliphaticRings', 'NumAromaticCarbocycles',
-    #                       'NumAromaticHeterocycles', 'NumAromaticRings', 'NumHAcceptors', 'NumHDonors',
-    #                       'NumHeteroatoms', 'NumRadicalElectrons', 'NumRotatableBonds',
-    #                       'NumSaturatedCarbocycles', 'NumSaturatedHeterocycles', 'NumSaturatedRings',
-    #                       'NumValenceElectrons', 'TPSA', 'qed']
     chosen_descriptors = ['NumRadicalElectrons', 'fr_isocyan', 'fr_prisulfonamd', 'fr_azide', 'fr_diazo', 
     'fr_barbitur', 'fr_benzodiazepine', 'fr_isothiocyan', 'SMR_VSA8', 'fr_dihydropyridine', 'fr_epoxide', 
     'fr_hdrzone', 'fr_lactam', 'fr_nitroso', 'fr_phos_ester', 'fr_term_acetylene', 'fr_tetrazole', 'fr_HOCCN', 

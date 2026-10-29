@@ -1,0 +1,19 @@
+# Core versions documented in README.md; use Python 3.8.
+# Select the PyTorch build for the CUDA version of the execution environment.
+torch==1.13.1
+rdkit==2022.9.1
+transformers==4.24.0
+networkx==2.8.4
+pandas==1.5.3
+scipy==1.10.0
+easydict
+
+# Original versions were not recorded. Use versions compatible with Python 3.8
+# and with the supplied serialized CatBoost models and scikit-learn scalers.
+numpy
+scikit-learn
+joblib
+psutil
+tqdm
+descriptastorus
+catboost

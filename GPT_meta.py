@@ -3,7 +3,7 @@
 # @Time: 2024/2/13
 
 import torch
-from transformers.models.gpt2.modeling_gpt2 import GPT2Attention, GPT2Model
+from transformers.models.gpt2.modeling_gpt2 import GPT2Attention
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 from transformers.models.gpt2 import GPT2LMHeadModel
 
@@ -26,7 +26,6 @@ class CrossSelfAttention(GPT2Attention):
             use_cache: Optional[bool] = False,
             output_attentions: Optional[bool] = False,
     ) -> Tuple[Union[torch.Tensor, Tuple[torch.Tensor]], ...]:
-        # todo speed this module: not do the attention with the cross part (descriptor part)
         if encoder_hidden_states is not None:
             if not hasattr(self, "q_attn"):
                 raise ValueError(
@@ -67,7 +66,7 @@ class CrossSelfAttention(GPT2Attention):
         if output_attentions:
             outputs += (attn_weights,)
 
-        return outputs[0]  # a, present, (attentions)
+        return outputs[0]
 
 
 class ResidualBlock(nn.Module):
@@ -80,7 +79,6 @@ class ResidualBlock(nn.Module):
         self.layer_norm = layer_norm
 
     def forward(self, x, *args, **kwargs):
-        # x is the mol embedding, already normalize
         residual = x
         x = self.layer_norm(x)
         outputs = self.layer(x, *args, **kwargs)
@@ -146,7 +144,7 @@ class PromptGPT(nn.Module):
         attentions = mol_out.attentions
         hidden_s = mol_out.hidden_states
         
-        # res net
+        # Fuse the extra features with the molecular sequence.
         residual = x
         extra_matrix = self.up_sample(extra_matrix)
         extra_matrix = self.ln_1(extra_matrix)
@@ -161,7 +159,7 @@ class PromptGPT(nn.Module):
         # Bottleneck FFN
         x = self.extra_adapter_ffn(x)
 
-        # ln and lm_head
+        # Project the adapted sequence to token logits.
         x = self.ln_f(x)
         lm_logits = self.lm_head(x)
 

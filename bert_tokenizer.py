@@ -1,5 +1,5 @@
 from transformers import BertTokenizer
-from typing import Dict, List, Tuple
+from typing import List
 import re
 
 class WordTokenizer:
@@ -48,7 +48,7 @@ class ExpressionBertTokenizer(BertTokenizer):
             cls_token: cls token. Defaults to "[CLS]".
             mask_token: mask token. Defaults to "[MASK]".
             pad_even (bool): Boolean indicating whether sequences of odd length should
-                be padded to have an even length. Neede for PLM in XLNet. Defaults to
+                be padded to have an even length. Retained for PLM compatibility. Defaults to
                 True.
             language (str): Identifier for the (chemical) language. Should be either
                 'SMILES', 'SELFIES' or 'AAS'.
@@ -64,24 +64,7 @@ class ExpressionBertTokenizer(BertTokenizer):
             mask_token=mask_token,
             **kwargs,
         )
-        # define tokenization utilities
-        # self.language = language
-        # if language == "SMILES":
-        #     self.text_tokenizer = RegexTokenizer(regex_pattern=SMILES_TOKENIZER_PATTERN)
-        # elif self.language == "SELFIES":
-        #     self.text_tokenizer = SelfiesTokenizer()
-        # elif language == "AAS":
-        #     self.text_tokenizer = CharacterTokenizer()
-        # else:
-        #     raise ValueError(
-        #         f"Unsupported language {language}, choose 'SMILES', 'SELFIES' or 'AAS'."
-        #     )
         self.text_tokenizer = WordTokenizer()
-
-        # self.property_tokenizer = PropertyTokenizer()
-        # self.expression_separator = "|"
-        # self.separator_idx = self.vocab[self.expression_separator]
-        # self.pad_even = pad_even
 
         # DEPRECATED
         if pad_even:
@@ -108,16 +91,7 @@ class ExpressionBertTokenizer(BertTokenizer):
             extracted tokens.
         """
         splitted_expression = text.split(' ')
-        # tokens = []
-        # for property_expression in splitted_expression:
-        #     tokens.extend(self.property_tokenizer.tokenize(property_expression))
-        #     tokens.append(self.expression_separator)
-        # tokens.extend(self.text_tokenizer.tokenize(splitted_expression[-1]))
-        # TODO: remove this hack
-        # This is a hack to get around DataCollatorForLanguageModeling requiring even
-        # length sequences
         return splitted_expression
-        # return self.pad_even_fn(tokens)
 
     def add_padding_tokens(
         self, token_ids: List[int], max_length: int, padding_right: bool = True
@@ -140,124 +114,7 @@ class ExpressionBertTokenizer(BertTokenizer):
         else:
             return padding_ids + token_ids
 
-    # @staticmethod
-    # def get_sample_label(mlm_label: List[str], mlm_input: List[str]) -> List[str]:
-    #     """MLM case: Retrieve true sample sequence from mlm label and mlm input.
-    #     NOTE: Also works for PLM.
-    #
-    #     Args:
-    #         mlm_label (List[str]): Target sample used in MLM.
-    #         mlm_input (List[str]): MLM input sample.
-    #
-    #     Returns:
-    #         List[str]: Sample sequence as part of the dataset
-    #     """
-    #
-    #     return [i if el == "[UNK]" else el for el, i in zip(mlm_label, mlm_input)]
-    #
-    # @staticmethod
-    # def get_sample_prediction(
-    #     mlm_prediction: List[str], mlm_input: List[str]
-    # ) -> List[str]:
-    #     """MLM case: Retrieve predicted sequence from mlm prediction and mlm input
-    #     NOTE: Also works for PLM.
-    #
-    #     Args:
-    #         mlm_label (List[str]): Target sample used in MLM.
-    #         mlm_input (List[str]): MLM input sample.
-    #
-    #     Returns:
-    #         List[str]: Sample sequence as part of the dataset
-    #     """
-    #     return [
-    #         i if i not in ["[MASK]"] else o for o, i in zip(mlm_prediction, mlm_input)
-    #     ]
 
-    # @staticmethod
-    # def floating_tokens_to_float(token_ids: List[str]) -> float:
-    #     """Converts tokens representing a float value into a float.
-    #     NOTE: Expects that non-floating tokens are strippped off
-    #
-    #     Args:
-    #         token_ids: List of tokens, each representing a float.
-    #             E.g.: ['_0_0_', '_._', '_9_-1_', '_3_-2_', '_1_-3_']
-    #
-    #     Returns:
-    #         float: Float representation for the list of tokens.
-    #     """
-    #     try:
-    #         float_string = "".join([token.split("_")[1] for token in token_ids])
-    #         float_value = float(float_string)
-    #     except ValueError:
-    #         float_value = -1
-    #     return float_value
-
-    # def aggregate_tokens(
-    #     self, token_ids: List[str], label_mode: bool, cls_first: bool = True
-    # ) -> Tuple[str, Dict]:
-    #     """Receives tokens of one sample and returns sequence (e.g. SMILES) and
-    #     a dict of properties.
-    #
-    #     Args:
-    #         token_ids (List[str]): List of tokens.
-    #         label_mode (bool): Whether the token_ids are labels or predictions.
-    #         cls_first (bool, optional): Whether CLS  token occurres first, default: True
-    #
-    #     Returns:
-    #         Tuple[str, Dict]:
-    #             str: SMILES/SELFIES sequence of sample.
-    #             Dict: A dictionary with property names (e.g. 'qed') as key and
-    #                 properties as values.
-    #     """
-    #     edx = min(
-    #         token_ids.index("[SEP]") if "[SEP]" in token_ids else 1000,
-    #         token_ids.index("[PAD]") if "[PAD]" in token_ids else 1000,
-    #     )
-    #
-    #     edx = -1 if edx == 1000 else edx
-    #
-    #     seq = (
-    #         "".join(token_ids[token_ids.index("|") + 1 : edx])
-    #         if "|" in token_ids
-    #         else "".join(token_ids)
-    #     )
-    #     property_dict = {}
-    #     for idx, t in enumerate(token_ids):
-    #         if t.startswith("<") and t.endswith(">"):
-    #             key = t[1:-1]
-    #
-    #             # Convert float
-    #             end_floating_idx = idx + 1
-    #             while token_ids[end_floating_idx].startswith("_"):
-    #                 end_floating_idx += 1
-    #
-    #             prop = self.floating_tokens_to_float(
-    #                 token_ids[idx + 1 : end_floating_idx]
-    #             )
-    #
-    #             property_dict[key] = prop
-    #
-    #     return seq, property_dict
-
-    # def to_readable(self, sequence: str) -> str:
-    #     """Safely returns a readable string irrespective of whether the language is
-    #     SMILES, SELFIES or AAS.
-    #
-    #     Args:
-    #         sequence (str): A string representing a molecule (either SMILES or SELFIES)
-    #             or amino acid sequence.
-    #
-    #     Returns:
-    #         str: A SMILES representing the same molecule.
-    #     """
-    #     if self.language == "SMILES":
-    #         return sequence
-    #     elif self.language == "SELFIES":
-    #         return decoder(sequence)
-    #     elif self.language == "AAS":
-    #         return sequence
-    #     else:
-    #         raise AttributeError(f"Unknown language {self.language}")
 class PropertyTokenizer:
     """Run a property tokenization."""
 
@@ -292,7 +149,5 @@ class PropertyTokenizer:
                     f"_{number}_-{position}_"
                     for position, number in enumerate(decimals, 1)
                 ]
-        # elif "nan" in text:#FANG
-        #     tokens.append(''.join(text.replace("nan","")))
         return tokens
 

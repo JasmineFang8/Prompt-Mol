@@ -54,13 +54,15 @@ catboost
 
 Versions for these additional packages are not pinned in the supplied environment template. Use a mutually compatible set and preserve the versions used to create serialized models and scalers. RDKit must include the Avalon fingerprint module used by `maplight.py`.
 
+`requirements.txt` records these core versions and additional package names. Install it in a Python 3.8 environment using the appropriate PyTorch build for your hardware. It is not a complete lockfile of the original experimental environment.
+
 `GPT_meta.py` uses GPT-2 attention interfaces from the older Transformers implementation. Retain Transformers 4.24.0 unless the model code is adapted to another version.
 
 ### Software dependencies
 
 **CUDA 11.6**, following the Token-Mol environment configuration.
 
-The trainer supports CPU or CUDA through `--device`. Both current inference scripts load model weights with `map_location='cuda'`, so their unchanged execution paths require an available CUDA device.
+The trainer supports CPU or CUDA through `--device`. Both inference scripts select CUDA when available and otherwise use CPU, and load checkpoint tensors onto the selected device. Full training and inference should be validated in the experimental environment before reproducing paper results.
 
 For training datasets or Anchor Libraries larger than **10,000 molecules**, allocate **at least four CPU cores**. Retrieval also requires sufficient system memory; the current fingerprint implementation requests 18 worker processes, so account for this when scheduling larger jobs.
 
@@ -113,7 +115,7 @@ Prompt-Mol/
 ├── maplight.py
 ├── all_range.py
 ├── prompt_reg_voc.csv
-├── prompt_mol.md
+├── requirements.txt
 ├── RTM_torsion_countinue_v2_epoch7_400/
 ├── cat_models/
 │   └── scaffold_random/
@@ -146,7 +148,7 @@ The preprocessing input CSV must contain `smiles` and `value` columns. The curre
 First set the project path. Replace the local path with the location of the supplied code directory on your machine:
 
 ```bash
-export PROMPT_MOL_ROOT=""
+export PROMPT_MOL_ROOT="/absolute/path/to/Prompt-Mol"
 ```
 
 Run tokenization from `data/gen_data`, where the tokenizer vocabulary is located:
@@ -160,18 +162,20 @@ python get_data.py \
   --save_path ../SA/chembl_8k_mw.csv
 ```
 
-The active implementation produces tokenized CSV records, including `GEO` from the tokenizer and a `[UNK]` placeholder.`--sdf_path` is retained in the interface but does not create an SDF in this execution path. Existing processed CSVs can be used directly without rerunning preprocessing. Choose another `--save_path` to preserve an existing output.
+The active implementation produces tokenized CSV records, including `GEO` from the tokenizer and a `[UNK]` placeholder. `--sdf_path` is retained in the interface but does not create an SDF in this execution path. Existing processed CSVs can be used directly without rerunning preprocessing. Choose another `--save_path` to preserve an existing output.
+
+The numbered scripts in `data/gen_data/` are legacy, dataset-specific geometry utilities. They retain their original algorithms and local input assumptions; the supported raw-data entry point for the examples here is `get_data.py`.
 
 ## Execution setup
 
-Both inference scripts retain relative paths such as `../RTM_torsion_countinue_v2_epoch7_400/`. With the current flattened code layout, run training and inference from a working directory **one level below the project root**, while invoking the scripts by their full paths:
+Default pretrained-model, vocabulary and test-protein paths resolve from the script directory. User-supplied relative paths resolve from the current working directory. A separate working directory is optional; the following setup keeps run outputs together:
 
 ```bash
 mkdir -p "$PROMPT_MOL_ROOT/run" "$PROMPT_MOL_ROOT/results/protein"
 cd "$PROMPT_MOL_ROOT/run"
 ```
 
-All following examples assume this setup. This allows the existing model and protein-data paths to resolve without moving or editing Python files. The preprocessing command above uses its own working directory.
+All following examples assume this setup and use explicit paths. The preprocessing command above uses its own working directory. SLURM examples accept `PROMPT_MOL_ROOT`; set it explicitly when submitting from outside the project directory.
 
 ## Training
 
@@ -229,6 +233,7 @@ python "$PROMPT_MOL_ROOT/train_prompt_mol.py" \
 | `--save_model_path`                            | Directory for the trained checkpoint and argument record.                                                                                                             |
 | `--lambda_attn`, `--lambda_alig`               | Optional property-training auxiliary loss weights. Protein mode requires both to be zero; its defaults satisfy this.                                                  |
 | `--prepare_only`                               | Prepare inputs without loading pretrained weights or starting training. It does not establish that all later inference paths are compatible.                          |
+| `--max_length`, `--overlength`                  | Reject overlength prompts by default, or skip them with `--overlength skip`. Text and extra feature tokens must fit within the 400-position context; targets are not truncated. |
 
 The training output includes `pytorch_model.pt` and `training_args.json` under `--save_model_path`. For inference, supply the `.pt` checkpoint through `--model_path`; during training the same argument instead points to the base pretrained-model directory.
 
@@ -253,6 +258,8 @@ python "$PROMPT_MOL_ROOT/pred_prompt_property.py" \
 
 The target CatBoost model and scaler could be prepared; for this example they are `caco2_model.cbm` and `caco2_scaler.pkl` in the selected model directory. They provide property estimates used during reference retrieval. The test CSV still needs a numeric label for reporting and evaluation.
 
+To rebuild CatBoost assets with `save_catModels.py`, supply raw CSV files at `--data_path/<property>/train.csv` and `valid.csv`, each with `smiles` and `value` columns. This utility retains the original practice of combining those two splits to fit the retrieval estimator. Processed molecular-token CSVs are not its input format. The pretrained assets above can be used without running this utility.
+
 
 | Argument           | Meaning                                                                                                         |
 | ------------------ | --------------------------------------------------------------------------------------------------------------- |
@@ -272,13 +279,14 @@ The script prints aggregated predictions and RMSE, MAE, and Spearman correlation
 python "$PROMPT_MOL_ROOT/pred_protein_mol.py" \
   --train_raw_path "$PROMPT_MOL_ROOT/data/SA/chembl_8k_mw.csv" \
   --test_raw_path "$PROMPT_MOL_ROOT/data/protein/test_mol_input_sa.csv" \
+  --test_protein_path "$PROMPT_MOL_ROOT/data/protein/test_protein_represent.pkl" \
   --model_path "$PROMPT_MOL_ROOT/fine_models/protein_example/pytorch_model.pt" \
   --vocab_path "$PROMPT_MOL_ROOT/prompt_reg_voc.csv" \
   --k 4 \
   --save_results "$PROMPT_MOL_ROOT/results/protein/gen_example.csv"
 ```
 
-The script reads test protein features from `../data/protein/test_protein_represent.pkl`, resolved from the `run/` directory to `Key_data/data/protein/test_protein_represent.pkl`. Match the feature list to the test molecular CSV in count and row order. Changing `--test_raw_path` alone does not select a different protein file.
+The default test protein file is `data/protein/test_protein_represent.pkl` under the project root. Use `--test_protein_path` to select another file. Match the feature list to the test molecular CSV in count and row order. Invalid molecular rows are rejected to prevent shifting molecule-to-protein alignment.
 
 Reference ligands in the test CSV are used to retrieve anchors from the selected library. The resulting prompts and pocket representations condition the generation of new molecules. The current entry point therefore expects pocket representations **and reference molecules**, rather than protein-only inputs.
 
@@ -287,11 +295,12 @@ Reference ligands in the test CSV are used to retrieve anchors from the selected
 | ------------------ | ---------------------------------------------------------------------------------------------------- |
 | `--train_raw_path` | Anchor Library defining the available reference chemical space.                                      |
 | `--test_raw_path`  | Reference/query ligands corresponding to the test protein representations.                           |
+| `--test_protein_path` | Ordered test protein representations; defaults to the supplied test-protein file.                  |
 | `--model_path`     | Trained protein-generation checkpoint.                                                               |
 | `--k`              | Number of Tanimoto-retrieved anchors; the implementation also retrieves one descriptor-based anchor. |
-| `--save_results`   | Output file for generated molecular sequences.                                                       |
+| `--save_results`   | Required output file for generated molecular sequences; parent directories are created as needed.   |
 
-The inference parser retains integer defaults of 400 dimensions for property prediction and 256 for generation, but converts explicitly supplied `--extra_emb_dim` values to floats. The inference commands intentionally omit that argument. Nondefault feature dimensions require an interface adaptation. The generation decoder is specialized to `<SA>`.
+The inference parsers accept integer `--extra_emb_dim` values, with defaults of 400 for property prediction and 256 for generation. The dimension must match both the checkpoint and the supplied features. Overlength prompts raise an error rather than silently truncating the target. The generation decoder is specialized to `<SA>`.
 
 ## Citation
 

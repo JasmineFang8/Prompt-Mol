@@ -1,0 +1,19 @@
+# Python and operating-system caches
+__pycache__/
+*.py[cod]
+.DS_Store
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Local environments and generated run outputs
+.venv/
+venv/
+run/
+results/
+fine_models/
+fine_model_path/
+save_model*/
+catboost_info/
+slurm-*.out
+*.log
+*.err

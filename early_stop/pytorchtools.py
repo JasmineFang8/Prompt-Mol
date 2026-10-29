@@ -20,7 +20,6 @@ class EarlyStopping:
             delta (float): Minimum change in the monitored quantity to qualify as an improvement.
                             Default: 0
         """
-        # self.model_name = model_name
         self.patience = patience
         self.verbose = verbose
         self.counter = 0
@@ -31,7 +30,6 @@ class EarlyStopping:
 
     def __call__(self, val_loss, model, model_name):
 
-        # score = -val_loss
         score = val_loss
 
 
@@ -55,13 +53,10 @@ class EarlyStopping:
         '''Saves model when validation loss decrease.'''
         if self.verbose:
             print(f'Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}).  Saving model ...')
-        # torch.save(model.state_dict(), 'checkpoint.pt')
         print('now best_score:', self.best_score)
 
         model_to_save = model.module if hasattr(model, 'module') else model
         torch.save(model_to_save.state_dict(), model_name + '/pytorch_model.pt')
-        # model_to_save.save_pretrained(model_name)
 
-        # torch.save(model.state_dict(), model_name + 'AMP_checkpoint.pt')
 
         self.val_loss_min = val_loss
